@@ -1,0 +1,21 @@
+{
+  "name": "weweb-leaflet-map",
+  "version": "1.0.0",
+  "description": "Reusable Leaflet map component for WeWeb",
+  "main": "ww-config.js",
+  "scripts": {
+    "build": "echo 'No build step required'"
+  },
+  "keywords": ["weweb", "leaflet", "map", "component"],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {}
+}
+```
+
+Update `.gitignore`:
+```
+node_modules/
+.DS_Store
+*.log
+.env
