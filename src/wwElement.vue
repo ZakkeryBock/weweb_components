@@ -1,5 +1,5 @@
 <template>
-<div class="leaflet-map-wrapper">
+<div class="leaflet-map-wrapper" :style="wwElementState.style">
 <div v-if="showDebug" class="debug-panel">
 <button @click="showDebug = false" class="close-debug">×</button>
 <p><strong>Map Status:</strong></p>
@@ -24,7 +24,7 @@
 <div class="loading-spinner">Loading route...</div>
 </div>
 
-<div ref="mapContainer" class="leaflet-map-container" :style="containerStyle"></div>
+<div ref="mapContainer" class="leaflet-map-container"></div>
 </div>
 </template>
 
@@ -41,6 +41,7 @@ required: true
 }
 },
 emits: ['trigger-event'],
+inject: ['wwElementState'],
 setup(props) {
 // Expose all internal variables using wwLib.wwVariable.useComponentVariable
 const { value: distance, setValue: setDistance } = wwLib.wwVariable.useComponentVariable({
@@ -107,22 +108,52 @@ markerInstances: [],
 routePolyline: null,
 routeData: null,
 leafletLoaded: false,
-showDebug: true,
+showDebug: false,
 isLoadingRoute: false,
 routeError: null,
 routingWarning: null
 }
 },
 computed: {
-containerStyle() {
-return {
-height: this.content.height || '400px',
-width: this.content.width || '100%'
-}
-},
 stops() {
-return this.content.stops || []
-},
+const stopsData = this.content.stops
+if (!stopsData) return []
+
+let rawStops = []
+if (Array.isArray(stopsData)) {
+rawStops = stopsData
+} else if (stopsData.data && Array.isArray(stopsData.data)) {
+// If it's an object with data property (common in WeWeb queries)
+rawStops = stopsData.data
+} else {
+return []
+}
+
+// Transform stops to standard format
+return rawStops.map((stop, index) => {
+// Check if it's already in the correct format
+if (stop.lat && stop.lng) {
+return stop
+}
+// Check if it has facilityAddress structure
+if (stop.facilityAddress && stop.facilityAddress.latitude && stop.facilityAddress.longitude) {
+return {
+lat: stop.facilityAddress.latitude,
+lng: stop.facilityAddress.longitude,
+label: stop.facilityName || `Stop ${index + 1}`,
+address: stop.facilityAddress.street_address 
+? `${stop.facilityAddress.street_address}, ${stop.facilityAddress.city}, ${stop.facilityAddress.state_code} ${stop.facilityAddress.zip_code}`
+: '',
+notes: this.buildStopNotes(stop),
+eta: stop.timeAppt || '',
+markerColor: null,
+stopIndex: stop.stopIndex,
+stopType: stop.stopType,
+loadingType: stop.loadingType,
+apptStatus: stop.apptStatus
+}
+}
+//
 hasRoute() {
 return this.stops.length > 1
 },
@@ -180,6 +211,8 @@ return this.content.avoidHighways === true
 },
 mounted() {
 console.log('Map component mounted')
+// Set debug panel visibility from config
+this.showDebug = this.content.showDebugPanel === true
 this.$nextTick(() => {
 setTimeout(() => {
 this.initMap()
@@ -198,6 +231,12 @@ console.log('Stops updated:', newStops)
 this.updateMapView()
 },
 deep: true
+},
+'content.showDebugPanel': {
+handler(newVal) {
+this.showDebug = newVal === true
+},
+immediate: true
 },
 routeColor() {
 this.updateRoute()
@@ -305,7 +344,12 @@ document.head.appendChild(script)
 },
 
 async updateMapView() {
-if (!this.map || this.stops.length === 0) return
+if (!this.map) return
+if (!Array.isArray(this.stops)) {
+console.warn('Stops data is not an array, skipping map update')
+return
+}
+if (this.stops.length === 0) return
 
 this.clearMap()
 this.addMarkers()
@@ -336,8 +380,13 @@ this.routingWarning = null
 },
 
 addMarkers() {
+if (!Array.isArray(this.stops)) {
+console.error('Stops is not an array:', this.stops)
+return
+}
+
 this.stops.forEach((stop, index) => {
-if (!stop.lat || !stop.lng) return
+if (!stop || !stop.lat || !stop.lng) return
 
 const markerHtml = this.createMarkerHtml(index + 1, stop)
 
@@ -432,7 +481,6 @@ if (this.stops.length < 2) return
 const validStops = this.stops.filter(stop => stop.lat && stop.lng)
 if (validStops.length < 2) return
 
-// Check if routing service supports requested features
 this.checkRoutingServiceCapabilities()
 
 this.isLoadingRoute = true
@@ -492,7 +540,6 @@ geometry: routeGeometry,
 stops: validStops.length
 }
 
-// Update the exposed variables using the setter functions from setup
 this.setDistance(this.routeData.distanceMiles);
 this.setDuration(this.routeData.durationMinutes);
 this.setFuelCost(this.routeData.fuelCostAmount);
@@ -501,7 +548,6 @@ this.setTotalCost(this.routeData.totalCostAmount);
 this.setFuelUsed(this.routeData.fuelUsedGallons);
 
 console.log('Route data calculated:', this.routeData)
-console.log('Variables updated - Distance:', this.distance, 'Duration:', this.duration)
 }
 
 } catch (error) {
@@ -514,12 +560,8 @@ this.isLoadingRoute = false
 },
 
 async fetchOSRMRoute(stops) {
-// OSRM does not support avoid options or truck restrictions
-// This is the basic free routing service
 const coordinates = stops.map(s => `${s.lng},${s.lat}`).join(';')
 const url = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`
-
-console.log('OSRM URL:', url)
 
 const response = await fetch(url)
 if (!response.ok) {
@@ -547,7 +589,6 @@ throw new Error('Mapbox API key required')
 
 const coordinates = stops.map(s => `${s.lng},${s.lat}`).join(';')
 
-// Build exclude parameter
 let excludeParams = []
 if (this.avoidTolls) excludeParams.push('toll')
 if (this.avoidHighways) excludeParams.push('motorway')
@@ -558,13 +599,8 @@ url += `geometries=geojson&overview=full`
 url += excludeString
 url += `&access_token=${this.routingApiKey}`
 
-console.log('Mapbox URL:', url)
-console.log('Mapbox avoid options:', { avoidTolls: this.avoidTolls, avoidHighways: this.avoidHighways })
-
 const response = await fetch(url)
 if (!response.ok) {
-const errorText = await response.text()
-console.error('Mapbox error response:', errorText)
 throw new Error(`Mapbox error: ${response.status}`)
 }
 
@@ -590,8 +626,6 @@ tollCost += toll.cost || 0
 })
 }
 
-console.log('Mapbox route distance:', distance, 'duration:', duration)
-
 return { routeGeometry, distance, duration, tollCost }
 },
 
@@ -611,41 +645,31 @@ vehicle_type: 'hgv'
 }
 }
 
-// Add truck restrictions if any are set
 const hasRestrictions = this.truckWeight > 0 || this.truckHeight > 0 || this.truckWidth > 0 || this.truckLength > 0
 if (hasRestrictions) {
 body.options.profile_params = {
 restrictions: {}
 }
 if (this.truckWeight > 0) {
-body.options.profile_params.restrictions.weight = this.truckWeight / 2204.62 // Convert lbs to metric tons
+body.options.profile_params.restrictions.weight = this.truckWeight / 2204.62
 }
 if (this.truckHeight > 0) {
-body.options.profile_params.restrictions.height = this.truckHeight * 0.3048 // Convert feet to meters
+body.options.profile_params.restrictions.height = this.truckHeight * 0.3048
 }
 if (this.truckWidth > 0) {
-body.options.profile_params.restrictions.width = this.truckWidth * 0.3048 // Convert feet to meters
+body.options.profile_params.restrictions.width = this.truckWidth * 0.3048
 }
 if (this.truckLength > 0) {
-body.options.profile_params.restrictions.length = this.truckLength * 0.3048 // Convert feet to meters
+body.options.profile_params.restrictions.length = this.truckLength * 0.3048
 }
 }
 
-// Add avoid features
 let avoidFeatures = []
 if (this.avoidTolls) avoidFeatures.push('tollways')
 if (this.avoidHighways) avoidFeatures.push('highways')
 if (avoidFeatures.length > 0) {
 body.options.avoid_features = avoidFeatures
 }
-
-console.log('OpenRouteService request:', {
-url,
-profile,
-avoidFeatures,
-restrictions: body.options.profile_params?.restrictions
-})
-console.log('OpenRouteService body:', JSON.stringify(body, null, 2))
 
 const response = await fetch(url, {
 method: 'POST',
@@ -657,8 +681,6 @@ body: JSON.stringify(body)
 })
 
 if (!response.ok) {
-const errorText = await response.text()
-console.error('OpenRouteService error response:', errorText)
 throw new Error(`OpenRouteService error: ${response.status}`)
 }
 
@@ -672,8 +694,6 @@ const route = data.features[0]
 const routeGeometry = route.geometry.coordinates.map(coord => [coord[1], coord[0]])
 const distance = route.properties.segments[0].distance / 1609.34
 const duration = route.properties.segments[0].duration
-
-console.log('OpenRouteService route distance:', distance, 'duration:', duration)
 
 return { routeGeometry, distance, duration }
 },
@@ -698,7 +718,6 @@ this.routeData.fuelCostAmount = parseFloat(fuelCost.toFixed(2))
 this.routeData.totalCost = (fuelCost + this.routeData.tollCostAmount).toFixed(2)
 this.routeData.totalCostAmount = parseFloat((fuelCost + this.routeData.tollCostAmount).toFixed(2))
 
-// Update the exposed variables
 this.setFuelCost(this.routeData.fuelCostAmount);
 this.setTotalCost(this.routeData.totalCostAmount);
 this.setFuelUsed(this.routeData.fuelUsedGallons);
@@ -765,6 +784,7 @@ duration: 1
 position: relative;
 width: 100%;
 height: 100%;
+overflow: hidden;
 }
 
 .debug-panel {
@@ -823,6 +843,8 @@ box-shadow: 0 2px 8px rgba(0,0,0,0.2);
 }
 
 .leaflet-map-container {
+width: 100%;
+height: 100%;
 position: relative;
 z-index: 0;
 }
